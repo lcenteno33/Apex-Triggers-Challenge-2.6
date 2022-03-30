@@ -1,22 +1,23 @@
 public with sharing class QuoteTriggerHandler {
     public static void beforeInsert(List<SBQQ__Quote__c> newList){
-        setQuoteDefaults(newList);
+        setDefaults(newList);
     }
 
     public static void afterInsert(List<SBQQ__Quote__c> newList){
-        setShippingAddress(newList);
+        //setShippingAddress(newList);
     }
 
-    public static void beforeUpdate(List<SBQQ__Quote__c> newList, Map<Id, SBQQ__Quote__c> oldMap){
-        setQuoteWatermark(newList, oldMap);
+    public static void beforeUpdate(List<SBQQ__Quote__c> newList, Map<Id, SBQQ__Quote__c> newMap, Map<Id, SBQQ__Quote__c> oldMap){
+        setWatermarkAndMailingAddress(newList, oldMap);
+        customRollUp(newList, newMap, oldMap);
     }
-
+    
     public static void afterUpdate(List<SBQQ__Quote__c> newList, Map<Id, SBQQ__Quote__c> oldMap){
         // Call additional methods to perform logic
     }
 
     /************************** Perform Business Logic **************************/
-    private static void setQuoteDefaults (List<SBQQ__Quote__c> newList) {
+    private static void setDefaults (List<SBQQ__Quote__c> newList) {
         Set<Id> accountIds = new Set<Id>();
         Set<Id> opportunityIds = new Set<Id>();
 
@@ -26,13 +27,13 @@ public with sharing class QuoteTriggerHandler {
         }
 
         Map<Id, Account> relatedAccountMap = new Map<Id, Account>([
-            SELECT Id, Ship_To__c
+            SELECT Id, Ship_To__c, Ship_To__r.MailingCity, Ship_To__r.MailingCountry
             FROM Account
             WHERE Id IN :accountIds
         ]);
 
         Map<Id, Opportunity> relatedOpportunityMap = new Map<Id, Opportunity>([
-            SELECT Id, Ship_To_Override__c
+            SELECT Id, Ship_To_Override__c, Ship_To_Override__r.MailingCity, Ship_To_Override__r.MailingCountry
             FROM Opportunity
             WHERE Id IN :opportunityIds
         ]);
@@ -42,11 +43,16 @@ public with sharing class QuoteTriggerHandler {
             Opportunity relatedOpp = relatedOpportunityMap.get(quote.SBQQ__Opportunity2__c);
             if(relatedOpp.Ship_To_Override__c != null) {
                 quote.Ship_To__c = relatedOpp.Ship_To_Override__c;
-                // Shipping Address don't exist in Quote object, should we creat it?
+                quote.SBQQ__ShippingCity__c = relatedOpp.Ship_To_Override__r.MailingCity;
+                quote.SBQQ__ShippingCountry__c = relatedOpp.Ship_To_Override__r.MailingCountry;
+                // take all the address fields
             } else {
                 Account relatedAccount = relatedAccountMap.get(quote.SBQQ__Account__c);
                 if (relatedAccount.Ship_To__c != null) {
                     quote.Ship_To__c = relatedAccount.Ship_To__c;
+                    quote.SBQQ__ShippingCity__c = relatedAccount.Ship_To__r.MailingCity;
+                    quote.SBQQ__ShippingCountry__c = relatedAccount.Ship_To__r.MailingCountry;
+                    // take all the address fields
                 } else {
                     quote.Ship_To_Approval_Required__c = true;
                 }
@@ -54,43 +60,99 @@ public with sharing class QuoteTriggerHandler {
         }
 
     }
+    
+    private static void setWatermarkAndMailingAddress (List<SBQQ__Quote__c> newList, Map<Id, SBQQ__Quote__c> oldMap) {
+        Set<Id> accountIds = new Set<Id>();
+        Set<Id> opportunityIds = new Set<Id>();
 
-    private static void setShippingAddress (List<SBQQ__Quote__c> newList) {
-        Set<Id> contactIds = new Set<Id>();
-        List<SBQQ__Quote__c> quoteToSetShippingAddress = new List<SBQQ__Quote__c>();
+        for(SBQQ__Quote__c quote : newList){
+            if (quote.SBQQ__Status__c != oldMap.get(quote.Id).SBQQ__Status__c) {
+                quote.SBQQ__WatermarkShown__c = quote.SBQQ__Status__c != 'Approved' ? true : false;
+            }
 
-        for (SBQQ__Quote__c quote : newList) {
-            if(quote.Ship_To__c != null) {
-                contactIds.add(quote.Ship_To__c);
+            if (quote.Ship_To__c != oldMap.get(quote.Id).Ship_To__c) {
+                accountIds.add(quote.SBQQ__Account__c);
+                opportunityIds.add(quote.SBQQ__Opportunity2__c);
             }
         }
 
-        if (!contactIds.isEmpty()){
-            
+         // Will be better to get the contact       
+        if(!accountIds.isEmpty() || !opportunityIds.isEmpty()){
+            Map<Id, Account> relatedAccountMap = new Map<Id, Account>([
+                    SELECT Id, Ship_To__c, Ship_To__r.MailingCity, Ship_To__r.MailingCountry
+                    FROM Account
+                    WHERE Id IN :accountIds
+                ]);
 
-            Map<Id, Contact> relatedContactMap = new Map<Id, Contact>([
-                SELECT Id, 	MailingAddress
-                FROM Contact
-                WHERE Id IN :contactIds
+            Map<Id, Opportunity> relatedOpportunityMap = new Map<Id, Opportunity>([
+                SELECT Id, Ship_To_Override__c, Ship_To_Override__r.MailingCity, Ship_To_Override__r.MailingCountry 
+                FROM Opportunity
+                WHERE Id IN :opportunityIds
             ]);
-            
-            for (SBQQ__Quote__c quote : newList) {
-                Contact relatedContact = relatedContactMap.get(quote.Ship_To__c);
-                SBQQ__Quote__c myQuote = new SBQQ__Quote__c();
-                myQuote.Id = quote.Id; 
-                //myQuote.Shipping_Address__c = relatedContact.MailingAddress;
-                //Can't not assign Address to Text
-                myQuote.Shipping_Address__c = 'Hard coded Address';
 
-                quoteToSetShippingAddress.add(myQuote);
-            }
-
-            update quoteToSetShippingAddress;
+                for (SBQQ__Quote__c quote : newList) {
+                    Opportunity relatedOpp = relatedOpportunityMap.get(quote.SBQQ__Opportunity2__c);
+                    if(relatedOpp.Ship_To_Override__c != null) {
+                        quote.Ship_To__c = relatedOpp.Ship_To_Override__c;
+                        quote.SBQQ__ShippingCity__c = relatedOpp.Ship_To_Override__r.MailingCity;
+                        quote.SBQQ__ShippingCountry__c = relatedOpp.Ship_To_Override__r.MailingCountry;
+                        quote.Ship_To_Approval_Required__c = false;
+                        // take all the address fields
+                    } else {
+                        Account relatedAccount = relatedAccountMap.get(quote.SBQQ__Account__c);
+                        if (relatedAccount.Ship_To__c != null) {
+                            quote.Ship_To__c = relatedAccount.Ship_To__c;
+                            quote.SBQQ__ShippingCity__c = relatedAccount.Ship_To__r.MailingCity;
+                            quote.SBQQ__ShippingCountry__c = relatedAccount.Ship_To__r.MailingCountry;
+                            quote.Ship_To_Approval_Required__c = false;
+                            // take all the address fields
+                        } else {
+                            quote.Ship_To_Approval_Required__c = true;
+                            quote.Ship_To__c = null;
+                            quote.SBQQ__ShippingCity__c = null;
+                            quote.SBQQ__ShippingCountry__c = null;
+                        }
+                    }
+                }
         }
+                
     }
 
-    private static void setQuoteWatermark (List<SBQQ__Quote__c> newList, Map<Id, SBQQ__Quote__c> oldMap) {
-        
+    private static void customRollUp (List<SBQQ__Quote__c> newList, Map<Id, SBQQ__Quote__c> newMap, Map<Id, SBQQ__Quote__c> oldMap) {
+        Set<Id> quoteIds = new Set<Id>();
+
+        //Wich field can I use to check and only run the logic when that field is updated?
+        for(SBQQ__Quote__c quote : newList){
+            quoteIds.add(quote.Id);
+        }
+
+        if(!quoteIds.isEmpty()) {
+            List<SBQQ__QuoteLine__c> relatedQuoteLines = new List<SBQQ__QuoteLine__c> ([
+                SELECT Id, SBQQ__ProductFamily__c, SBQQ__Quote__c, SBQQ__TotalDiscountAmount__c
+                FROM SBQQ__QuoteLine__c
+                WHERE SBQQ__Quote__c IN :quoteIds
+            ]);
+
+            for (SBQQ__Quote__c quote : newList) {
+                Decimal discountSoftware = 0.00;
+                Decimal discountHardware = 0.00;
+                Decimal discountService = 0.00;
+                for (SBQQ__QuoteLine__c quoteLine :relatedQuoteLines ){
+                    if(quoteLine.SBQQ__ProductFamily__c == 'Software'){
+                        discountSoftware += quoteLine.SBQQ__TotalDiscountAmount__c;
+                    } else if(quoteLine.SBQQ__ProductFamily__c == 'Hardware') {
+                        discountHardware += quoteLine.SBQQ__TotalDiscountAmount__c;
+                    } else if (quoteLine.SBQQ__ProductFamily__c == 'Service') {
+                        discountService += quoteLine.SBQQ__TotalDiscountAmount__c;
+                    }
+                }
+                quote.Software_Discount_Total__c = discountSoftware;
+                quote.Hardware_Discount_Total__c = discountHardware;
+                quote.Service_Discount_Total__c = discountService;
+                
+            }
+
+        }
     }
     /************************** Helper Methods **************************/
 
